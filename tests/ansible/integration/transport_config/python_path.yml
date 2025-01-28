@@ -2,12 +2,17 @@
 # Each case is followed by mitogen_via= case to test hostvars method.
 
 
-# When no ansible_python_interpreter is set, ansible 2.8+ automatically
-# tries to detect the desired interpreter, falling back to "/usr/bin/python" if necessary
+# If ansible_python_interpreter isn't set, Ansible 2.8+ tries to connect and
+# detect the interpreter. If that fails (e.g. connection timeout)
+# - Ansible 2.8 - 9 (ansible-core 2.8 - 2.16) assumes "/usr/bin/python"
+# - Ansible 10+ (ansible-core 2.17+) marks the target unreachable
 - name: integration/transport_config/python_path.yml
   hosts: tc-python-path-unset
   tasks:
   - include_tasks: ../_mitogen_only.yml
+  - meta: end_play
+    when:
+      - ansible_version.full is version('2.17', '>=', strict=True)
   - {mitogen_get_stack: {}, register: out}
   - assert_equal:
       left: out.result[0].kwargs.python_path
@@ -15,10 +20,14 @@
   tags:
     - mitogen_only
 
-- hosts: tc-python-path-hostvar
+- name: tc-python-path-hostvar via tc-python-path-unset
+  hosts: tc-python-path-hostvar
   vars: {mitogen_via: tc-python-path-unset}
   tasks:
   - include_tasks: ../_mitogen_only.yml
+  - meta: end_play
+    when:
+      - ansible_version.full is version('2.17', '>=', strict=True)
   - {mitogen_get_stack: {}, register: out}
   - assert_equal:
       left: out.result[0].kwargs.python_path
@@ -41,10 +50,14 @@
   tags:
     - mitogen_only
 
-- hosts: tc-python-path-unset
+- name: tc-python-path-unset via tc-python-path-hostvar
+  hosts: tc-python-path-unset
   vars: {mitogen_via: tc-python-path-hostvar}
   tasks:
   - include_tasks: ../_mitogen_only.yml
+  - meta: end_play
+    when:
+      - ansible_version.full is version('2.17', '>=', strict=True)
   - {mitogen_get_stack: {}, register: out}
   - assert_equal:
       left: out.result[0].kwargs.python_path
@@ -67,10 +80,14 @@
   tags:
     - mitogen_only
 
-- hosts: tc-python-path-unset
+- name: tc-python-path-unset via localhost
+  hosts: tc-python-path-unset
   vars: {mitogen_via: localhost}
   tasks:
   - include_tasks: ../_mitogen_only.yml
+  - meta: end_play
+    when:
+      - ansible_version.full is version('2.17', '>=', strict=True)
   - {mitogen_get_stack: {}, register: out}
   - assert_equal:
       left: out.result[0].kwargs.python_path
@@ -94,7 +111,8 @@
     - mitogen_only
 
 
-- hosts: localhost
+- name: localhost via tc-python-path-local-unset
+  hosts: localhost
   vars: {mitogen_via: tc-python-path-local-unset}
   tasks:
   - include_tasks: ../_mitogen_only.yml
@@ -120,7 +138,8 @@
   tags:
     - mitogen_only
 
-- hosts: localhost
+- name: localhost via tc-python-path-local-explicit
+  hosts: localhost
   vars: {mitogen_via: tc-python-path-local-explicit}
   tasks:
   - include_tasks: ../_mitogen_only.yml

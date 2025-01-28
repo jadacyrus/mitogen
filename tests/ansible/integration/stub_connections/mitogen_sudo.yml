@@ -8,7 +8,6 @@
   - custom_python_detect_environment:
     vars:
       ansible_connection: mitogen_sudo
-      ansible_python_interpreter: python  # avoid Travis virtualenv breakage
       ansible_user: root
       ansible_become_exe: stub-sudo.py
       ansible_become_flags: -H --type=sometype --role=somerole
@@ -16,7 +15,8 @@
 
   - assert:
       that: out.env.THIS_IS_STUB_SUDO == '1'
-      fail_msg: out={{out}}
+      fail_msg: |
+        out={{ out }}
 
   - assert_equal:
       left: (out.env.ORIGINAL_ARGV|from_json)[1:9]

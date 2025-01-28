@@ -35,18 +35,14 @@ import pwd
 import random
 import traceback
 
-try:
-    from shlex import quote as shlex_quote
-except ImportError:
-    from pipes import quote as shlex_quote
-
-from ansible.module_utils._text import to_bytes
-from ansible.parsing.utils.jsonify import jsonify
-
 import ansible
-import ansible.constants
-import ansible.plugins
 import ansible.plugins.action
+import ansible.utils.unsafe_proxy
+import ansible.vars.clean
+
+from ansible.module_utils.common.text.converters import to_bytes, to_text
+from ansible.module_utils.six.moves import shlex_quote
+from ansible.parsing.utils.jsonify import jsonify
 
 import mitogen.core
 import mitogen.select
@@ -56,24 +52,6 @@ import ansible_mitogen.planner
 import ansible_mitogen.target
 import ansible_mitogen.utils
 import ansible_mitogen.utils.unsafe
-
-from ansible.module_utils._text import to_text
-
-try:
-    from ansible.utils.unsafe_proxy import wrap_var
-except ImportError:
-    from ansible.vars.unsafe_proxy import wrap_var
-
-try:
-    # ansible 2.8 moved remove_internal_keys to the clean module
-    from ansible.vars.clean import remove_internal_keys
-except ImportError:
-    try:
-        from ansible.vars.manager import remove_internal_keys
-    except ImportError:
-        # ansible 2.3.3 has remove_internal_keys as a protected func on the action class
-        # we'll fallback to calling self._remove_internal_keys in this case
-        remove_internal_keys = lambda a: "Not found"
 
 
 LOG = logging.getLogger(__name__)
@@ -125,13 +103,10 @@ class ActionModuleMixin(ansible.plugins.action.ActionBase):
 
         # required for python interpreter discovery
         connection.templar = self._templar
-        self._finding_python_interpreter = False
-        self._rediscovered_python = False
-        # redeclaring interpreter discovery vars here in case running ansible < 2.8.0
-        self._discovered_interpreter_key = None
-        self._discovered_interpreter = False
-        self._discovery_deprecation_warnings = []
-        self._discovery_warnings = []
+
+        self._mitogen_discovering_interpreter = False
+        self._mitogen_interpreter_candidate = None
+        self._mitogen_rediscovered_interpreter = False
 
     def run(self, tmp=None, task_vars=None):
         """
@@ -280,7 +255,9 @@ class ActionModuleMixin(ansible.plugins.action.ActionBase):
                   paths, mode, sudoable)
         return self.fake_shell(lambda: mitogen.select.Select.all(
             self._connection.get_chain().call_async(
-                ansible_mitogen.target.set_file_mode, path, mode
+                ansible_mitogen.target.set_file_mode,
+                ansible_mitogen.utils.unsafe.cast(path),
+                mode,
             )
             for path in paths
         ))
@@ -314,7 +291,7 @@ class ActionModuleMixin(ansible.plugins.action.ActionBase):
         if not path.startswith('~'):
             # /home/foo -> /home/foo
             return path
-        if sudoable or not self._play_context.become:
+        if sudoable or not self._connection.become:
             if path == '~':
                 # ~ -> /home/dmw
                 return self._connection.homedir
@@ -357,7 +334,9 @@ class ActionModuleMixin(ansible.plugins.action.ActionBase):
 
     def _execute_module(self, module_name=None, module_args=None, tmp=None,
                         task_vars=None, persist_files=False,
-                        delete_remote_tmp=True, wrap_async=False):
+                        delete_remote_tmp=True, wrap_async=False,
+                        ignore_unknown_opts=False,
+                        ):
         """
         Collect up a module's execution environment then use it to invoke
         target.run_module() or helpers.run_module_async() in the target
@@ -370,7 +349,13 @@ class ActionModuleMixin(ansible.plugins.action.ActionBase):
         if task_vars is None:
             task_vars = {}
 
-        self._update_module_args(module_name, module_args, task_vars)
+        if ansible_mitogen.utils.ansible_version[:2] >= (2, 17):
+            self._update_module_args(
+                module_name, module_args, task_vars,
+                ignore_unknown_opts=ignore_unknown_opts,
+            )
+        else:
+            self._update_module_args(module_name, module_args, task_vars)
         env = {}
         self._compute_environment_string(env)
         self._set_temp_file_args(module_args, wrap_async)
@@ -403,10 +388,7 @@ class ActionModuleMixin(ansible.plugins.action.ActionBase):
             self._remove_tmp_path(tmp)
 
         # prevents things like discovered_interpreter_* or ansible_discovered_interpreter_* from being set
-        # handle ansible 2.3.3 that has remove_internal_keys in a different place
-        check = remove_internal_keys(result)
-        if check == 'Not found':
-            self._remove_internal_keys(result)
+        ansible.vars.clean.remove_internal_keys(result)
 
         # taken from _execute_module of ansible 2.8.6
         # propagate interpreter discovery results back to the controller
@@ -417,7 +399,7 @@ class ActionModuleMixin(ansible.plugins.action.ActionBase):
             # only cache discovered_interpreter if we're not running a rediscovery
             # rediscovery happens in places like docker connections that could have different
             # python interpreters than the main host
-            if not self._rediscovered_python:
+            if not self._mitogen_rediscovered_interpreter:
                 result['ansible_facts'][self._discovered_interpreter_key] = self._discovered_interpreter
 
         if self._discovery_warnings:
@@ -430,7 +412,7 @@ class ActionModuleMixin(ansible.plugins.action.ActionBase):
                 result['deprecations'] = []
             result['deprecations'].extend(self._discovery_deprecation_warnings)
 
-        return wrap_var(result)
+        return ansible.utils.unsafe_proxy.wrap_var(result)
 
     def _postprocess_response(self, result):
         """
@@ -477,7 +459,7 @@ class ActionModuleMixin(ansible.plugins.action.ActionBase):
         # calling exec_command until we run into the right python we'll use
         # chicken-and-egg issue, mitogen needs a python to run low_level_execute_command
         # which is required by Ansible's discover_interpreter function
-        if self._finding_python_interpreter:
+        if self._mitogen_discovering_interpreter:
             possible_pythons = [
                 '/usr/bin/python',
                 'python3',
@@ -494,32 +476,27 @@ class ActionModuleMixin(ansible.plugins.action.ActionBase):
             # not used, just adding a filler value
             possible_pythons = ['python']
 
-        def _run_cmd():
-            return self._connection.exec_command(
-                cmd=cmd,
-                in_data=in_data,
-                sudoable=sudoable,
-                mitogen_chdir=chdir,
-            )
-
         for possible_python in possible_pythons:
             try:
-                self._possible_python_interpreter = possible_python
-                rc, stdout, stderr = _run_cmd()
+                self._mitogen_interpreter_candidate = possible_python
+                rc, stdout, stderr = self._connection.exec_command(
+                    cmd, in_data, sudoable, mitogen_chdir=chdir,
+                )
             # TODO: what exception is thrown?
             except:
                 # we've reached the last python attempted and failed
-                # TODO: could use enumerate(), need to check which version of python first had it though
-                if possible_python == 'python':
+                if possible_python == possible_pythons[-1]:
                     raise
                 else:
                     continue
 
         stdout_text = to_text(stdout, errors=encoding_errors)
+        stderr_text = to_text(stderr, errors=encoding_errors)
 
         return {
             'rc': rc,
             'stdout': stdout_text,
             'stdout_lines': stdout_text.splitlines(),
-            'stderr': stderr,
+            'stderr': stderr_text,
+            'stderr_lines': stderr_text.splitlines(),
         }

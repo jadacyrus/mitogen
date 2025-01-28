@@ -54,46 +54,49 @@ try:
     import importlib.machinery
     import importlib.util
     from _imp import is_builtin as _is_builtin
+
+    def _find_loader(fullname):
+        try:
+            maybe_spec = importlib.util.find_spec(fullname)
+        except (ImportError, AttributeError, TypeError, ValueError):
+            exc = sys.exc_info()[1]
+            raise ImportError(*exc.args)
+        try:
+            return maybe_spec.loader
+        except AttributeError:
+            return None
 except ImportError:
     # Python < 3.4, PEP 302 Import Hooks
     import imp
     from imp import is_builtin as _is_builtin
+
+    try:
+        from pkgutil import find_loader as _find_loader
+    except ImportError:
+        # Python < 2.5
+        from mitogen.compat.pkgutil import find_loader as _find_loader
 
 try:
     import sysconfig
 except ImportError:
     sysconfig = None
 
-if not hasattr(pkgutil, 'find_loader'):
-    # find_loader() was new in >=2.5, but the modern pkgutil.py syntax has
-    # been kept intentionally 2.3 compatible so we can reuse it.
-    from mitogen.compat import pkgutil
-
 import mitogen
 import mitogen.core
 import mitogen.minify
 import mitogen.parent
 
+from mitogen.core import any
 from mitogen.core import b
 from mitogen.core import IOLOG
 from mitogen.core import LOG
+from mitogen.core import next
 from mitogen.core import str_partition
 from mitogen.core import str_rpartition
 from mitogen.core import to_text
 
 imap = getattr(itertools, 'imap', map)
 izip = getattr(itertools, 'izip', zip)
-
-try:
-    any
-except NameError:
-    from mitogen.core import any
-
-try:
-    next
-except NameError:
-    from mitogen.core import next
-
 
 RLOG = logging.getLogger('mitogen.ctx')
 
@@ -184,7 +187,7 @@ def get_child_modules(path, fullname):
         return [to_text(name) for _, name, _ in pkgutil.iter_modules([mod_path])]
     else:
         # we loaded some weird package in memory, so we'll see if it has a custom loader we can use
-        loader = pkgutil.find_loader(fullname)
+        loader = _find_loader(fullname)
         return [to_text(name) for name, _ in loader.iter_modules(None)] if loader else []
 
 
@@ -537,7 +540,7 @@ class PkgutilMethod(FinderMethod):
             # then the containing package is imported.
             # Pre-'import spec' this returned None, in Python3.6 it raises
             # ImportError.
-            loader = pkgutil.find_loader(fullname)
+            loader = _find_loader(fullname)
         except ImportError:
             e = sys.exc_info()[1]
             LOG.debug('%r: find_loader(%r) failed: %s', self, fullname, e)
@@ -661,7 +664,7 @@ class ParentImpEnumerationMethod(FinderMethod):
     insane) parent package, and if no insane parents exist, simply use
     :mod:`sys.path` to search for it from scratch on the filesystem using the
     normal Python lookup mechanism.
-    
+
     This is required for older versions of :mod:`ansible.compat.six`,
     :mod:`plumbum.colors`, Ansible 2.8 :mod:`ansible.module_utils.distro` and
     its submodule :mod:`ansible.module_utils.distro._distro`.

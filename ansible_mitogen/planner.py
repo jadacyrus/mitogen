@@ -54,6 +54,7 @@ import mitogen.select
 import ansible_mitogen.loaders
 import ansible_mitogen.parsing
 import ansible_mitogen.target
+import ansible_mitogen.utils.unsafe
 
 
 LOG = logging.getLogger(__name__)
@@ -215,12 +216,15 @@ class ScriptPlanner(BinaryPlanner):
     """
     def _rewrite_interpreter(self, path):
         """
-        Given the original interpreter binary extracted from the script's
-        interpreter line, look up the associated `ansible_*_interpreter`
-        variable, render it and return it.
+        Given the interpreter path (from the script's hashbang line), return
+        the desired interpreter path. This tries, in order
+
+        1. Look up & render the `ansible_*_interpreter` variable, if set
+        2. Look up the `discovered_interpreter_*` fact, if present
+        3. The unmodified path from the hashbang line.
 
         :param str path:
-            Absolute UNIX path to original interpreter.
+            Absolute path to original interpreter (e.g. '/usr/bin/python').
 
         :returns:
             Shell fragment prefix used to execute the script via "/bin/sh -c".
@@ -228,13 +232,25 @@ class ScriptPlanner(BinaryPlanner):
             involved here, the vanilla implementation uses it and that use is
             exploited in common playbooks.
         """
-        key = u'ansible_%s_interpreter' % os.path.basename(path).strip()
+        interpreter_name = os.path.basename(path).strip()
+        key = u'ansible_%s_interpreter' % interpreter_name
         try:
             template = self._inv.task_vars[key]
         except KeyError:
-            return path
+            pass
+        else:
+            configured_interpreter = self._inv.templar.template(template)
+            return ansible_mitogen.utils.unsafe.cast(configured_interpreter)
 
-        return mitogen.utils.cast(self._inv.templar.template(template))
+        key = u'discovered_interpreter_%s' % interpreter_name
+        try:
+            discovered_interpreter = self._inv.task_vars['ansible_facts'][key]
+        except KeyError:
+            pass
+        else:
+            return ansible_mitogen.utils.unsafe.cast(discovered_interpreter)
+
+        return path
 
     def _get_interpreter(self):
         path, arg = ansible_mitogen.parsing.parse_hashbang(
@@ -249,7 +265,8 @@ class ScriptPlanner(BinaryPlanner):
         if arg:
             fragment += ' ' + arg
 
-        return fragment, path.startswith('python')
+        is_python = path.startswith('python')
+        return fragment, is_python
 
     def get_kwargs(self, **kwargs):
         interpreter_fragment, is_python = self._get_interpreter()
@@ -324,6 +341,47 @@ class NewStylePlanner(ScriptPlanner):
         'firewalld',  # issue #570: ansible module_utils caches dbus conn
         'ansible.legacy.dnf',  # issue #776
         'ansible.builtin.dnf', # issue #832
+        'freeipa.ansible_freeipa.ipaautomember', # issue #1216
+        'freeipa.ansible_freeipa.ipaautomountkey',
+        'freeipa.ansible_freeipa.ipaautomountlocation',
+        'freeipa.ansible_freeipa.ipaautomountmap',
+        'freeipa.ansible_freeipa.ipacert',
+        'freeipa.ansible_freeipa.ipaconfig',
+        'freeipa.ansible_freeipa.ipadelegation',
+        'freeipa.ansible_freeipa.ipadnsconfig',
+        'freeipa.ansible_freeipa.ipadnsforwardzone',
+        'freeipa.ansible_freeipa.ipadnsrecord',
+        'freeipa.ansible_freeipa.ipadnszone',
+        'freeipa.ansible_freeipa.ipagroup',
+        'freeipa.ansible_freeipa.ipahbacrule',
+        'freeipa.ansible_freeipa.ipahbacsvc',
+        'freeipa.ansible_freeipa.ipahbacsvcgroup',
+        'freeipa.ansible_freeipa.ipahost',
+        'freeipa.ansible_freeipa.ipahostgroup',
+        'freeipa.ansible_freeipa.idoverridegroup',
+        'freeipa.ansible_freeipa.idoverrideuser',
+        'freeipa.ansible_freeipa.idp',
+        'freeipa.ansible_freeipa.idrange',
+        'freeipa.ansible_freeipa.idview',
+        'freeipa.ansible_freeipa.ipalocation',
+        'freeipa.ansible_freeipa.ipanetgroup',
+        'freeipa.ansible_freeipa.ipapermission',
+        'freeipa.ansible_freeipa.ipaprivilege',
+        'freeipa.ansible_freeipa.ipapwpolicy',
+        'freeipa.ansible_freeipa.iparole',
+        'freeipa.ansible_freeipa.ipaselfservice',
+        'freeipa.ansible_freeipa.ipaserver',
+        'freeipa.ansible_freeipa.ipaservice',
+        'freeipa.ansible_freeipa.ipaservicedelegationrule',
+        'freeipa.ansible_freeipa.ipaservicedelegationtarget',
+        'freeipa.ansible_freeipa.ipasudocmd',
+        'freeipa.ansible_freeipa.ipasudocmdgroup',
+        'freeipa.ansible_freeipa.ipasudorule',
+        'freeipa.ansible_freeipa.ipatopologysegment',
+        'freeipa.ansible_freeipa.ipatopologysuffix',
+        'freeipa.ansible_freeipa.ipatrust',
+        'freeipa.ansible_freeipa.ipauser',
+        'freeipa.ansible_freeipa.ipavault',
     ])
 
     def should_fork(self):
@@ -460,7 +518,7 @@ def read_file(path):
     finally:
         os.close(fd)
 
-    return mitogen.core.b('').join(bits)
+    return b''.join(bits)
 
 
 def _propagate_deps(invocation, planner, context):

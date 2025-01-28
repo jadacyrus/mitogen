@@ -13,11 +13,13 @@
       - out.result|length == 2
       - out.result[0].method == "ssh"
       - out.result[1].method == "sudo"
-      fail_msg: out={{out}}
+      fail_msg: |
+        out={{ out }}
   tags:
     - mitogen_only
 
-- hosts: tc-become-method-unset
+- name: tc-become-method-unset via becomeuser@tc-become-method-su
+  hosts: tc-become-method-unset
   vars: {mitogen_via: becomeuser@tc-become-method-su}
   tasks:
   - include_tasks: ../_mitogen_only.yml
@@ -30,7 +32,8 @@
       - out.result[1].kwargs.username == "becomeuser"
       - out.result[2].method == "ssh"
       - out.result[2].kwargs.hostname == "tc-become-method-unset"
-      fail_msg: out={{out}}
+      fail_msg: |
+        out={{ out }}
   tags:
     - mitogen_only
 
@@ -48,11 +51,13 @@
       - out.result[0].method == "ssh"
       - out.result[1].method == "su"
       - out.result[1].kwargs.username == "becomeuser"
-      fail_msg: out={{out}}
+      fail_msg: |
+        out={{ out }}
   tags:
     - mitogen_only
 
-- hosts: tc-become-method-su
+- name: tc-become-method-su via tc-become-method-unset
+  hosts: tc-become-method-su
   vars: {mitogen_via: tc-become-method-unset}
   become: true
   become_user: becomeuser
@@ -70,14 +75,15 @@
 
       - out.result[2].method == "su"
       - out.result[2].kwargs.username == "becomeuser"
-      fail_msg: out={{out}}
+      fail_msg: |
+        out={{ out }}
   tags:
     - mitogen_only
 
 
-
 # mitogen_via used to specify explicit become method
-- hosts: tc-become-method-unset
+- name: tc-become-method-unset via doas:doasuser@tc-become-method-su
+  hosts: tc-become-method-unset
   vars: {mitogen_via: "doas:doasuser@tc-become-method-su"}
   tasks:
   - include_tasks: ../_mitogen_only.yml
@@ -93,6 +99,7 @@
 
       - out.result[2].method == "ssh"
       - out.result[2].kwargs.hostname == "tc-become-method-unset"
-      fail_msg: out={{out}}
+      fail_msg: |
+        out={{ out }}
   tags:
     - mitogen_only
