@@ -1,0 +1,7 @@
+- hosts: localhost
+  tasks:
+    - name: Run a shell command
+      ansible.builtin.command: /bin/echo $(id -un)
+      become: true
+      become_user: nobody
+      become_method: ansible.builtin.sudo
